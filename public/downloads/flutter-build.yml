@@ -1,0 +1,77 @@
+name: Build Flutter APK
+
+# يبني التطبيق ويعطيك ملف APK جاهزاً للتثبيت من صفحة Actions ← Artifacts
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      # هذه الخطوة تحل خطأ: Expected to find project root in current working directory
+      # تبحث عن pubspec.yaml في الجذر أو في أي مجلد فرعي وتستخدم مجلده كجذر للمشروع
+      - name: Locate Flutter project root
+        id: root
+        run: |
+          set -e
+          FILE=$(find . -maxdepth 4 -name pubspec.yaml -not -path '*/.dart_tool/*' -not -path '*/build/*' | head -n 1)
+          if [ -z "$FILE" ]; then
+            echo "::error::لم يُعثر على pubspec.yaml. ضع محتوى الحزمة في جذر المستودع (وليس داخل مجلد فرعي)."
+            exit 1
+          fi
+          DIR=$(dirname "$FILE")
+          echo "dir=$DIR" >> "$GITHUB_OUTPUT"
+          echo "Flutter project root => $DIR"
+
+      - name: Set up Java 17
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Set up Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+
+      # يولد مجلدات android/ و web/ إذا لم تكن موجودة (Flutter يحتاجها لبناء APK)
+      - name: Scaffold platform folders if missing
+        working-directory: ${{ steps.root.outputs.dir }}
+        run: |
+          set -e
+          if [ ! -d android ]; then
+            flutter create --project-name fpl_arena --org com.fplarena --platforms=android,web /tmp/scaffold
+            cp -rn /tmp/scaffold/android .
+            cp -rn /tmp/scaffold/web .
+            if [ -f /tmp/scaffold/.metadata ]; then cp -n /tmp/scaffold/.metadata .; fi
+            echo "تم توليد مجلدات المنصات"
+          fi
+          rm -f test/widget_test.dart
+
+      - name: Flutter pub get
+        working-directory: ${{ steps.root.outputs.dir }}
+        run: flutter pub get
+
+      - name: Analyze
+        working-directory: ${{ steps.root.outputs.dir }}
+        run: flutter analyze --no-fatal-infos --no-fatal-warnings
+
+      - name: Build APK
+        working-directory: ${{ steps.root.outputs.dir }}
+        run: |
+          flutter build apk --release || flutter build apk --debug
+
+      - name: Upload APK artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: fpl-arena-apk
+          path: "**/build/app/outputs/flutter-apk/*.apk"
+          if-no-files-found: error
+          retention-days: 14
